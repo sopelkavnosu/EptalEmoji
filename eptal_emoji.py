@@ -991,11 +991,17 @@ class AppController(QObject):
 
 
 def main():
+    # Запуск только одного экземпляра приложения
+    mutex = kernel32.CreateMutexW(None, False, "Local\\EptalEmoji_SingleInstance")
+    if kernel32.GetLastError() == 183:
+        return
+
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     controller = AppController(app)
     # keep reference
     app._controller = controller
+    app._instance_mutex = mutex
     sys.exit(app.exec())
 
 
