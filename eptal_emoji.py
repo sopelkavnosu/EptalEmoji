@@ -13,16 +13,20 @@ from PyQt6.QtCore import QEvent, QObject, QPoint, QEasingCurve, QPropertyAnimati
 from PyQt6.QtGui import QAction, QCursor, QFont, QIcon
 from PyQt6.QtWidgets import (
     QApplication,
+    QDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
     QMenu,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizeGrip,
     QSystemTrayIcon,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -39,9 +43,10 @@ SWP_FRAMECHANGED = 0x0020
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
 
-APP_VERSION = "1.30"
+APP_VERSION = "1.31"
 HISTORY_PATH = Path.home() / ".eptal_emoji_history.json"
 STATE_PATH = Path.home() / ".eptal_emoji_state.json"
+CUSTOM_PATH = Path.home() / ".eptal_emoji_custom.json"
 MAX_HISTORY = 30
 
 CATEGORY_MAP = {
@@ -185,6 +190,130 @@ def save_state(data):
         pass
 
 
+def load_custom():
+    # Загружает список своих смайликов
+    try:
+        if CUSTOM_PATH.exists():
+            data = json.loads(CUSTOM_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return [str(x) for x in data if isinstance(x, str) and x]
+    except Exception:
+        pass
+    return []
+
+
+def save_custom(items):
+    # Сохраняет список своих смайликов
+    try:
+        CUSTOM_PATH.write_text(json.dumps(items, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def make_emoji_entry(ch: str, custom: bool = False):
+    # Создаёт запись эмодзи для отображения в сетке
+    data = emoji.EMOJI_DATA.get(ch, {}) if isinstance(ch, str) else {}
+    en = (data.get("en") or "").strip(":")
+    ru = (data.get("ru") or "").strip(":")
+    aliases = data.get("alias") or []
+    if isinstance(aliases, str):
+        aliases = [aliases]
+    alias_text = " ".join(a.strip(":") for a in aliases)
+    tags = data.get("tags") or []
+    if isinstance(tags, str):
+        tags = [tags]
+    tag_text = " ".join(str(t) for t in tags)
+    search_blob = " ".join([en, ru, alias_text, tag_text, ch]).lower()
+    group = categorize_emoji(ch, en) if en else "Faces"
+    if not en:
+        # Для неизвестных эмодзи задаём базовые значения, чтобы они попадали в поиск/категории
+        en = "custom emoji"
+        ru = "свой смайлик"
+        search_blob = " ".join([en, ru, ch]).lower()
+        group = "Faces"
+    entry = {
+        "char": ch,
+        "group": group,
+        "en": en,
+        "ru": ru,
+        "search": search_blob,
+    }
+    if custom:
+        entry["custom"] = True
+    return entry
+
+
+def extract_emojis_from_text(text: str):
+    # Извлекает эмодзи из текста (вставленных пользователем)
+    if not text:
+        return []
+    result = []
+    try:
+        # Предпочтительно: получить эмодзи через библиотеку emoji
+        if hasattr(emoji, "emoji_list"):
+            items = emoji.emoji_list(text)
+            for it in items:
+                ch = it.get("emoji")
+                if ch:
+                    result.append(ch)
+            if result:
+                return result
+        if hasattr(emoji, "distinct_emoji_list"):
+            result = list(emoji.distinct_emoji_list(text))
+            if result:
+                return result
+    except Exception:
+        pass
+    # Запасной вариант: посимвольный разбор с учётом последовательностей
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        # Пропускаем пробелы и управляющие символы
+        if ch.isspace() or ord(ch) < 0x200:
+            i += 1
+            continue
+        # Пытаемся собрать последовательность эмодзи (ZWJ/variation selectors/skin tones)
+        seq = ch
+        j = i + 1
+        while j < n:
+            c = text[j]
+            o = ord(c)
+            if c == "\u200d" or c == "\ufe0f" or c == "\ufe0e" or (0x1F3FB <= o <= 0x1F3FF):
+                seq += c
+                j += 1
+                # Если был ZWJ, захватываем следующий символ как часть последовательности
+                if c == "\u200d" and j < n:
+                    seq += text[j]
+                    j += 1
+                continue
+            # Региональные индикаторы (флаги)
+            if 0x1F1E6 <= ord(seq[0]) <= 0x1F1FF and 0x1F1E6 <= o <= 0x1F1FF and len(seq) == 1:
+                seq += c
+                j += 1
+                continue
+            break
+        # Добавляем, если похоже на эмодзи/символ вне ASCII
+        if ord(seq[0]) >= 0x200 or seq in emoji.EMOJI_DATA:
+            result.append(seq)
+        i = j if j > i else i + 1
+    return result
+
+
+def merge_custom_entries(entries, custom_chars):
+    # Добавляет свои смайлики в общий список записей
+    if not custom_chars:
+        return entries
+    existing = {e.get("char") for e in entries}
+    for ch in custom_chars:
+        if not ch or ch in existing:
+            continue
+        entry = make_emoji_entry(ch, custom=True)
+        entries.append(entry)
+        existing.add(ch)
+    return entries
+
+
 def categorize_emoji(ch: str, name: str) -> str:
     """Эвристическая категория для UI-вкладок."""
     cp = ord(ch[0]) if ch else 0
@@ -263,13 +392,105 @@ def build_emoji_entries():
     return entries
 
 
+class AddEmojiDialog(QDialog):
+    def __init__(self, custom_chars, on_changed, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Добавить смайлики")
+        self.setModal(True)
+        self.resize(420, 360)
+        self.custom_chars = custom_chars
+        self.on_changed = on_changed
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        hint = QLabel("Вставьте сюда смайлики (эмодзи), которые хотите добавить:")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        self.input_edit = QTextEdit()
+        self.input_edit.setPlaceholderText("Например: 😀 😅 🙃")
+        self.input_edit.setFixedHeight(70)
+        layout.addWidget(self.input_edit)
+
+        btn_row = QHBoxLayout()
+        self.add_btn = QPushButton("Добавить")
+        self.add_btn.clicked.connect(self.add_from_input)
+        btn_row.addWidget(self.add_btn)
+        btn_row.addStretch(1)
+        layout.addLayout(btn_row)
+
+        list_label = QLabel("Добавленные смайлики:")
+        layout.addWidget(list_label)
+
+        self.list_widget = QListWidget()
+        layout.addWidget(self.list_widget, 1)
+
+        actions_row = QHBoxLayout()
+        self.remove_btn = QPushButton("Удалить выбранные")
+        self.remove_btn.clicked.connect(self.remove_selected)
+        actions_row.addWidget(self.remove_btn)
+        actions_row.addStretch(1)
+        self.close_btn = QPushButton("Закрыть")
+        self.close_btn.clicked.connect(self.close)
+        actions_row.addWidget(self.close_btn)
+        layout.addLayout(actions_row)
+
+        self.refresh_list()
+
+    def refresh_list(self):
+        # Обновляет список своих смайликов в диалоге
+        self.list_widget.clear()
+        for ch in self.custom_chars:
+            self.list_widget.addItem(ch)
+
+    def add_from_input(self):
+        # Добавляет смайлики из поля ввода
+        text = self.input_edit.toPlainText().strip()
+        if not text:
+            return
+        chars = extract_emojis_from_text(text)
+        if not chars:
+            QMessageBox.information(self, "Смайлики", "Не удалось найти смайлики во вставленном тексте.")
+            return
+        existing = set(self.custom_chars)
+        added = 0
+        for ch in chars:
+            if ch and ch not in existing:
+                self.custom_chars.append(ch)
+                existing.add(ch)
+                added += 1
+        if added:
+            save_custom(self.custom_chars)
+            self.refresh_list()
+            if callable(self.on_changed):
+                self.on_changed()
+        self.input_edit.clear()
+
+    def remove_selected(self):
+        # Удаляет выбранные смайлики из списка
+        items = self.list_widget.selectedItems()
+        if not items:
+            return
+        to_remove = {it.text() for it in items}
+        if not to_remove:
+            return
+        self.custom_chars[:] = [ch for ch in self.custom_chars if ch not in to_remove]
+        save_custom(self.custom_chars)
+        self.refresh_list()
+        if callable(self.on_changed):
+            self.on_changed()
+
+
 class EptalEmojiWindow(QWidget):
     emoji_selected = pyqtSignal(str)
 
-    def __init__(self, all_entries, history, initial_category="All"):
+    def __init__(self, all_entries, history, custom_chars, initial_category="All"):
         super().__init__()
         self.all_entries = all_entries
         self.history = history
+        self.custom_chars = custom_chars
         self.current_category = initial_category
         self.target_hwnd = 0
         self._drag_state = None
@@ -375,6 +596,18 @@ class EptalEmojiWindow(QWidget):
         self.search.setFixedHeight(24)
         self.search.setMaximumWidth(220)
         top_row.addWidget(self.search, 1)
+        self.add_btn = QPushButton("+")
+        self.add_btn.setFixedSize(28, 28)
+        self.add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.add_btn.setToolTip("Добавить смайлики")
+        self.add_btn.setStyleSheet(
+            "QPushButton { background: #2b2b2b; color: #f3f3f3; border: none; border-radius: 8px; font-size: 16px; }"
+            "QPushButton:hover { background: #3a3a3a; }"
+        )
+        self.add_btn.clicked.connect(self.open_add_emoji_dialog)
+        self.add_btn.installEventFilter(self)
+        self.add_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        top_row.addWidget(self.add_btn)
         self.hide_btn = QPushButton("×")
         self.hide_btn.setFixedSize(28, 28)
         self.hide_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -487,6 +720,21 @@ class EptalEmojiWindow(QWidget):
         except Exception:
             pass
 
+    def open_add_emoji_dialog(self):
+        # Открывает окно добавления своих смайликов
+        dlg = AddEmojiDialog(self.custom_chars, self.reload_custom_entries, self)
+        dlg.exec()
+
+    def reload_custom_entries(self):
+        # Пересобирает список эмодзи с учётом добавленных пользователем
+        try:
+            base = build_emoji_entries()
+            merge_custom_entries(base, self.custom_chars)
+            self.all_entries = base
+            self.refresh_grid()
+        except Exception:
+            pass
+
     def set_category(self, name):
         self.current_category = name
         for n, btn in self.cat_buttons.items():
@@ -516,6 +764,8 @@ class EptalEmojiWindow(QWidget):
 
     @staticmethod
     def _is_round_smiley(entry):
+        if entry.get("custom"):
+            return True
         ch = entry.get("char", "")
         if not ch:
             return False
@@ -762,6 +1012,8 @@ class AppController(QObject):
         self.last_target_hwnd = 0
         self.entries = build_emoji_entries()
         self.history = load_history()
+        self.custom_chars = load_custom()
+        merge_custom_entries(self.entries, self.custom_chars)
         state = load_state()
         self.auto_popup_enabled = bool(state.get("auto_popup_enabled", True))
         initial_category = state.get("last_category") or "BigSmiles"
@@ -773,7 +1025,7 @@ class AppController(QObject):
         self.bridge = SignalBridge()
         self.bridge.hotkey_pressed.connect(self.on_hotkey)
 
-        self.window = EptalEmojiWindow(self.entries, self.history, initial_category)
+        self.window = EptalEmojiWindow(self.entries, self.history, self.custom_chars, initial_category)
         self.window.emoji_selected.connect(self.on_emoji_selected)
 
         self.tray = QSystemTrayIcon()
