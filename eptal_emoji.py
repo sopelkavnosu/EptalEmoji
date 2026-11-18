@@ -9,8 +9,8 @@ import emoji
 import keyboard
 import pyperclip
 import uiautomation as auto
-from PyQt6.QtCore import QEvent, QObject, QPoint, QEasingCurve, QPropertyAnimation, Qt, QThread, QTimer, pyqtSignal
-from PyQt6.QtGui import QAction, QCursor, QFont, QIcon
+from PyQt6.QtCore import QEvent, QMimeData, QObject, QPoint, QEasingCurve, QPropertyAnimation, Qt, QThread, QTimer, pyqtSignal
+from PyQt6.QtGui import QAction, QCursor, QDrag, QFont, QIcon
 from PyQt6.QtWidgets import (
     QApplication,
     QDialog,
@@ -43,7 +43,7 @@ SWP_FRAMECHANGED = 0x0020
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
 
-APP_VERSION = "1.31"
+APP_VERSION = "1.32"
 HISTORY_PATH = Path.home() / ".eptal_emoji_history.json"
 STATE_PATH = Path.home() / ".eptal_emoji_state.json"
 CUSTOM_PATH = Path.home() / ".eptal_emoji_custom.json"
@@ -210,6 +210,28 @@ def save_custom(items):
         pass
 
 
+def load_category_overrides():
+    # Загружает переопределения категорий для смайликов
+    try:
+        st = load_state()
+        data = st.get("emoji_category_overrides", {})
+        if isinstance(data, dict):
+            return {str(k): str(v) for k, v in data.items() if isinstance(k, str) and isinstance(v, str)}
+    except Exception:
+        pass
+    return {}
+
+
+def save_category_overrides(overrides):
+    # Сохраняет переопределения категорий для смайликов
+    try:
+        st = load_state()
+        st["emoji_category_overrides"] = overrides
+        save_state(st)
+    except Exception:
+        pass
+
+
 def make_emoji_entry(ch: str, custom: bool = False):
     # Создаёт запись эмодзи для отображения в сетке
     data = emoji.EMOJI_DATA.get(ch, {}) if isinstance(ch, str) else {}
@@ -304,15 +326,18 @@ def merge_custom_entries(entries, custom_chars):
     # Добавляет свои смайлики в общий список записей
     if not custom_chars:
         return entries
-    existing = {e.get("char") for e in entries}
+    by_char = {e.get("char"): e for e in entries}
     for ch in custom_chars:
-        if not ch or ch in existing:
+        if not ch:
+            continue
+        if ch in by_char:
+            # Если смайлик уже есть во встроенном наборе, помечаем его как добавленный
+            by_char[ch]["custom"] = True
             continue
         entry = make_emoji_entry(ch, custom=True)
         entries.append(entry)
-        existing.add(ch)
+        by_char[ch] = entry
     return entries
-
 
 def categorize_emoji(ch: str, name: str) -> str:
     """Эвристическая категория для UI-вкладок."""
@@ -394,9 +419,9 @@ def build_emoji_entries():
 
 class AddEmojiDialog(QDialog):
     def __init__(self, custom_chars, on_changed, parent=None):
-        super().__init__(parent)
+        super().__init__(None)
         self.setWindowTitle("Добавить смайлики")
-        self.setModal(True)
+        self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.WindowCloseButtonHint)
         self.resize(420, 360)
         self.custom_chars = custom_chars
         self.on_changed = on_changed
@@ -494,6 +519,11 @@ class EptalEmojiWindow(QWidget):
         self.current_category = initial_category
         self.target_hwnd = 0
         self._drag_state = None
+        self._emoji_drag = None
+        self.on_delete_emoji = None
+        self.on_move_emoji = None
+        self.category_overrides = {}
+        self.add_dialog = None
         self._save_size_timer = QTimer(self)
         self._save_size_timer.setSingleShot(True)
         self._save_size_timer.setInterval(400)
@@ -589,30 +619,51 @@ class EptalEmojiWindow(QWidget):
         self.drag_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.drag_btn.installEventFilter(self)
         top_row.addWidget(self.drag_btn)
+
+        self.cat_buttons = {}
+        self.added_btn = QPushButton("Добавл.")
+        self.added_btn.setObjectName("catBtn")
+        self.added_btn.setCheckable(True)
+        self.added_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.added_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.added_btn.setFixedHeight(28)
+        self.added_btn.setToolTip("Добавленные смайлики")
+        self.added_btn.setStyleSheet(
+            "QPushButton#catBtn { background-color: #2b2b2b; color: #eaeaea; border: none; border-radius: 8px; padding: 4px 7px; font-family: 'Segoe UI'; font-size: 12px; }"
+            "QPushButton#catBtn:checked { background-color: #3a3a3a; color: #ffffff; }"
+            "QPushButton#catBtn:hover { background-color: #343434; }"
+        )
+        self.added_btn.clicked.connect(lambda checked=False, n="Custom": self.set_category(n))
+        self.added_btn.installEventFilter(self)
+        self.added_btn.setAcceptDrops(True)
+        self.cat_buttons["Custom"] = self.added_btn
+        top_row.addWidget(self.added_btn)
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Поиск эмодзи (en/ru)...")
+        self.search.setPlaceholderText("Поиск...")
         self.search.textChanged.connect(self.refresh_grid)
         self.search.setMinimumWidth(0)
         self.search.setFixedHeight(24)
-        self.search.setMaximumWidth(220)
+        self.search.setMaximumWidth(140)
         top_row.addWidget(self.search, 1)
         self.add_btn = QPushButton("+")
         self.add_btn.setFixedSize(28, 28)
         self.add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.add_btn.setToolTip("Добавить смайлики")
         self.add_btn.setStyleSheet(
-            "QPushButton { background: #2b2b2b; color: #f3f3f3; border: none; border-radius: 8px; font-size: 16px; }"
+            "QPushButton { background: #2b2b2b; color: #f3f3f3; border: none; border-radius: 8px; font-family: 'Segoe UI'; font-size: 16px; padding: 0px; padding-bottom: 1px; }"
             "QPushButton:hover { background: #3a3a3a; }"
         )
         self.add_btn.clicked.connect(self.open_add_emoji_dialog)
         self.add_btn.installEventFilter(self)
         self.add_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         top_row.addWidget(self.add_btn)
-        self.hide_btn = QPushButton("×")
+
+        self.hide_btn = QPushButton("✕")
         self.hide_btn.setFixedSize(28, 28)
         self.hide_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.hide_btn.setToolTip("Скрыть")
         self.hide_btn.setStyleSheet(
-            "QPushButton { background: #2b2b2b; color: #f3f3f3; border: none; border-radius: 8px; font-size: 16px; }"
+            "QPushButton { background: #2b2b2b; color: #f3f3f3; border: none; border-radius: 8px; font-family: 'Segoe UI'; font-size: 14px; padding: 0px; }"
             "QPushButton:hover { background: #3a3a3a; }"
         )
         self.hide_btn.clicked.connect(self.hide)
@@ -622,7 +673,6 @@ class EptalEmojiWindow(QWidget):
 
         cat_row = QHBoxLayout()
         cat_row.setSpacing(6)
-        self.cat_buttons = {}
         self.cat_labels = {
             "Recent": "Недавние",
             "BigSmiles": "Круглые",
@@ -636,6 +686,7 @@ class EptalEmojiWindow(QWidget):
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.clicked.connect(lambda checked=False, n=key: self.set_category(n))
             btn.installEventFilter(self)
+            btn.setAcceptDrops(True)
             self.cat_buttons[key] = btn
             cat_row.addWidget(btn)
         layout.addLayout(cat_row)
@@ -721,17 +772,36 @@ class EptalEmojiWindow(QWidget):
             pass
 
     def open_add_emoji_dialog(self):
-        # Открывает окно добавления своих смайликов
-        dlg = AddEmojiDialog(self.custom_chars, self.reload_custom_entries, self)
-        dlg.exec()
+        # Открывает независимое окно добавления своих смайликов
+        try:
+            if self.add_dialog is not None and self.add_dialog.isVisible():
+                self.add_dialog.refresh_list()
+                self.add_dialog.showNormal()
+                self.add_dialog.raise_()
+                self.add_dialog.activateWindow()
+                return
+        except Exception:
+            self.add_dialog = None
+        dlg = AddEmojiDialog(self.custom_chars, self.reload_custom_entries, None)
+        self.add_dialog = dlg
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
 
     def reload_custom_entries(self):
         # Пересобирает список эмодзи с учётом добавленных пользователем
         try:
             base = build_emoji_entries()
             merge_custom_entries(base, self.custom_chars)
+            st = load_state()
+            hidden = set(st.get("hidden_emojis", []))
+            if hidden:
+                base = [e for e in base if e.get("char") not in hidden]
+            self.category_overrides = st.get("emoji_category_overrides", {}) or {}
             self.all_entries = base
             self.refresh_grid()
+            if self.add_dialog is not None and self.add_dialog.isVisible():
+                self.add_dialog.refresh_list()
         except Exception:
             pass
 
@@ -745,32 +815,24 @@ class EptalEmojiWindow(QWidget):
         save_state(state)
         self.refresh_grid()
 
-    def _filtered_entries(self):
-        q = self.search.text().strip().lower()
-        if self.current_category == "Recent":
-            # Недавние: в порядке нажатий (последний нажатый — первый)
-            by_char = {e["char"]: e for e in self.all_entries}
-            items = [by_char[c] for c in self.history if c in by_char]
-        elif self.current_category == "BigSmiles":
-            # Только крупные (круглые) смайлики
-            items = [e for e in self.all_entries if self._is_round_smiley(e)]
-        else:
-            # Категории сопоставлены эвристически в поле group
-            items = [e for e in self.all_entries if e.get("group") == self.current_category]
-        if not q:
-            return items if self.current_category == "Recent" else items[:2000]
-        res = [e for e in items if q in e["search"] or q in e["char"]]
-        return res[:2000] if self.current_category != "Recent" else res
-
-    @staticmethod
-    def _is_round_smiley(entry):
-        if entry.get("custom"):
-            return True
+    def _is_round_smiley(self, entry):
+        # Определяет, относится ли смайлик к вкладке "Круглые"
         ch = entry.get("char", "")
         if not ch:
             return False
+        overrides = getattr(self, "category_overrides", {}) or {}
+        ov = overrides.get(ch)
+        if ov == "Custom":
+            return False
+        if ov in {"BigSmiles", "Nature/Food", "Symbols"}:
+            return ov == "BigSmiles"
+        if entry.get("custom"):
+            return False
         cp = ord(ch[0])
         name = (entry.get("en") or "").lower()
+        # Всё, что связано с котом, показываем во вкладке "Круглые"
+        if "cat" in name:
+            return True
         # Классические круглые смайлики-лица
         if 0x1F600 <= cp <= 0x1F636:
             return True
@@ -791,6 +853,104 @@ class EptalEmojiWindow(QWidget):
         if any(k in name for k in ["smiling face", "grinning face", "face with", "winking face", "neutral face", "expressionless face"]):
             return True
         return False
+
+    def _filtered_entries(self):
+        q = self.search.text().strip().lower()
+        overrides = getattr(self, "category_overrides", {}) or {}
+        custom_chars = set(getattr(self, "custom_chars", []) or [])
+
+        def is_custom(e):
+            ch = e.get("char", "")
+            ov = overrides.get(ch)
+            if ov == "Custom":
+                return True
+            if ov in {"BigSmiles", "Nature/Food", "Symbols"}:
+                return False
+            return bool(e.get("custom")) or ch in custom_chars
+
+        def in_bigsmiles(e):
+            ch = e.get("char", "")
+            if is_custom(e):
+                return False
+            ov = overrides.get(ch)
+            if ov in {"BigSmiles", "Nature/Food", "Symbols"}:
+                return ov == "BigSmiles"
+            return self._is_round_smiley(e)
+
+        def in_group(e, group):
+            ch = e.get("char", "")
+            if is_custom(e):
+                return False
+            ov = overrides.get(ch)
+            if ov in {"BigSmiles", "Nature/Food", "Symbols"}:
+                return ov == group
+            return e.get("group") == group and not self._is_round_smiley(e)
+
+        if self.current_category == "Recent":
+            # Недавние: в порядке нажатий (последний сверху - первым)
+            by_char = {e["char"]: e for e in self.all_entries}
+            items = [by_char[c] for c in self.history if c in by_char]
+        elif self.current_category == "BigSmiles":
+            # Круглые смайлики и коты
+            items = [e for e in self.all_entries if in_bigsmiles(e)]
+        elif self.current_category == "Custom":
+            # Добавленные пользователем смайлики
+            items = [e for e in self.all_entries if is_custom(e)]
+        elif self.current_category in {"Nature/Food", "Symbols"}:
+            items = [e for e in self.all_entries if in_group(e, self.current_category)]
+        else:
+            items = [
+                e for e in self.all_entries
+                if e.get("group") == self.current_category
+                and not in_bigsmiles(e)
+                and not is_custom(e)
+            ]
+        if not q:
+            return items if self.current_category == "Recent" else items[:2000]
+        res = [e for e in items if q in e["search"] or q in e["char"]]
+        return res[:2000] if self.current_category != "Recent" else res
+
+    @staticmethod
+    def _is_round_smiley(entry):
+        if entry.get("custom"):
+            return False
+        ch = entry.get("char", "")
+        if not ch:
+            return False
+        cp = ord(ch[0])
+        name = (entry.get("en") or "").lower()
+        # Всё, что связано с котом, показываем во вкладке "Круглые"
+        if "cat" in name:
+            return True
+        # Классические круглые смайлики-лица
+        if 0x1F600 <= cp <= 0x1F636:
+            return True
+        if 0x1F641 <= cp <= 0x1F644:
+            return True
+        if 0x1F910 <= cp <= 0x1F917:
+            return True
+        if 0x1F920 <= cp <= 0x1F925:
+            return True
+        if 0x1F927 <= cp <= 0x1F92F:
+            return True
+        if 0x1F970 <= cp <= 0x1F976:
+            return True
+        if 0x1F978 <= cp <= 0x1F97A:
+            return True
+        if 0x1F9D0 <= cp <= 0x1F9D0:
+            return True
+        if any(k in name for k in ["smiling face", "grinning face", "face with", "winking face", "neutral face", "expressionless face"]):
+            return True
+        return False
+
+
+    def _show_emoji_menu(self, btn, ch):
+        # Показывает меню действий для смайлика
+        menu = QMenu(self)
+        delete_action = menu.addAction("Удалить")
+        action = menu.exec(btn.mapToGlobal(btn.rect().center()))
+        if action == delete_action and callable(getattr(self, "on_delete_emoji", None)):
+            self.on_delete_emoji(ch)
 
     def clear_grid(self):
         while self.grid_layout.count():
@@ -849,6 +1009,7 @@ class EptalEmojiWindow(QWidget):
                 entry = entries[index]
                 ch = entry["char"]
                 btn = QPushButton(ch)
+                btn.setProperty("emoji_char", ch)
                 btn.setCursor(Qt.CursorShape.PointingHandCursor)
                 btn.setFixedSize(btn_size, btn_size)
                 btn.setFont(emoji_font)
@@ -858,6 +1019,10 @@ class EptalEmojiWindow(QWidget):
                     "QPushButton:hover { background: #333333; border-radius: 8px; }"
                 )
                 btn.clicked.connect(lambda checked=False, c=ch: self.emoji_selected.emit(c))
+                btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+                btn.customContextMenuRequested.connect(
+                    lambda pos, c=ch, b=btn: self._show_emoji_menu(b, c)
+                )
                 btn.installEventFilter(self)
                 self.grid_layout.addWidget(btn, index // cols, index % cols)
                 index += 1
@@ -954,8 +1119,18 @@ class EptalEmojiWindow(QWidget):
         anim.start()
         self._scroll_anim = anim
 
+    def _category_key_for_button(self, obj):
+        # Возвращает ключ категории для кнопки-вкладки
+        try:
+            for key, btn in self.cat_buttons.items():
+                if obj is btn:
+                    return key
+        except Exception:
+            pass
+        return None
+
     def eventFilter(self, obj, event):
-        # Плавная прокрутка колесом мыши и перетаскивание окна
+        # Плавная прокрутка, перетаскивание окна, перенос смайликов во вкладки
         try:
             et = event.type()
             if obj is self.scroll.viewport() and et == QEvent.Type.Wheel:
@@ -964,14 +1139,67 @@ class EptalEmojiWindow(QWidget):
                     self.smooth_scroll_by(delta)
                     return True
 
+            # Перенос смайлика на кнопку категории (drag-and-drop)
+            cat_key = self._category_key_for_button(obj)
+            if cat_key and cat_key != "Recent":
+                if et in (QEvent.Type.DragEnter, QEvent.Type.DragMove):
+                    md = event.mimeData()
+                    if md and md.hasFormat("application/x-eptal-emoji"):
+                        event.acceptProposedAction()
+                        return True
+                elif et == QEvent.Type.Drop:
+                    md = event.mimeData()
+                    if md and md.hasFormat("application/x-eptal-emoji"):
+                        ch = bytes(md.data("application/x-eptal-emoji")).decode("utf-8", errors="ignore")
+                        if ch and callable(getattr(self, "on_move_emoji", None)):
+                            self.on_move_emoji(ch, cat_key)
+                        event.acceptProposedAction()
+                        return True
+
+            # Начало перетаскивания смайлика из сетки
+            emoji_char = None
+            try:
+                emoji_char = obj.property("emoji_char")
+            except Exception:
+                emoji_char = None
+            if emoji_char and et == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+                self._emoji_drag = {"char": str(emoji_char), "pos": event.globalPosition().toPoint(), "started": False}
+                self._drag_state = None
+                return super().eventFilter(obj, event)
+
+            if self._emoji_drag is not None and emoji_char == self._emoji_drag.get("char"):
+                if et == QEvent.Type.MouseMove and event.buttons() & Qt.MouseButton.LeftButton:
+                    if not self._emoji_drag.get("started"):
+                        if (event.globalPosition().toPoint() - self._emoji_drag["pos"]).manhattanLength() >= QApplication.startDragDistance():
+                            self._emoji_drag["started"] = True
+                            drag = QDrag(obj)
+                            mime = QMimeData()
+                            mime.setData("application/x-eptal-emoji", str(self._emoji_drag["char"]).encode("utf-8"))
+                            mime.setText(str(self._emoji_drag["char"]))
+                            drag.setMimeData(mime)
+                            drag.exec(Qt.DropAction.MoveAction)
+                            self._emoji_drag = None
+                            return True
+                    return super().eventFilter(obj, event)
+                if et == QEvent.Type.MouseButtonRelease:
+                    self._emoji_drag = None
+                    return super().eventFilter(obj, event)
+
             if et == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
                 w = QApplication.widgetAt(event.globalPosition().toPoint())
                 can_drag = False
                 if w is not None:
-                    if getattr(w, "objectName", lambda: "")() == "dragHandle":
+                    w_char = None
+                    try:
+                        w_char = w.property("emoji_char")
+                    except Exception:
+                        w_char = None
+                    if w_char:
+                        can_drag = False
+                    elif getattr(w, "objectName", lambda: "")() == "dragHandle":
                         can_drag = True
                     elif not isinstance(w, QLineEdit) and w.__class__.__name__ != "QScrollBar":
-                        # Перетаскивание за любой участок окна, кроме поля ввода и полос прокрутки
+                        # Перетаскивание за пустую зону окна, кроме поля ввода, прокрутки и смайликов
                         can_drag = True
                 if can_drag:
                     self._drag_state = {
@@ -979,6 +1207,8 @@ class EptalEmojiWindow(QWidget):
                         "pos": event.globalPosition().toPoint(),
                         "dragging": False,
                     }
+                else:
+                    self._drag_state = None
                 return super().eventFilter(obj, event)
 
             if et == QEvent.Type.MouseMove and self._drag_state is not None:
@@ -997,13 +1227,13 @@ class EptalEmojiWindow(QWidget):
             if et == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
                 was_dragging = self._drag_state is not None and self._drag_state.get("dragging")
                 self._drag_state = None
+                self._emoji_drag = None
                 if was_dragging and hasattr(self, "_save_pos_timer"):
                     self._save_pos_timer.start()
                 return super().eventFilter(obj, event)
         except Exception:
             pass
         return super().eventFilter(obj, event)
-
 
 class AppController(QObject):
     def __init__(self, app: QApplication):
@@ -1015,18 +1245,26 @@ class AppController(QObject):
         self.custom_chars = load_custom()
         merge_custom_entries(self.entries, self.custom_chars)
         state = load_state()
+        hidden = set(state.get("hidden_emojis", []))
+        if hidden:
+            self.entries = [e for e in self.entries if e.get("char") not in hidden]
+            self.history = [ch for ch in self.history if ch not in hidden]
         self.auto_popup_enabled = bool(state.get("auto_popup_enabled", True))
         initial_category = state.get("last_category") or "BigSmiles"
         if initial_category in {"All", "Faces", "Flags"}:
             initial_category = "BigSmiles"
-        if initial_category not in {"Recent", "BigSmiles", "Nature/Food", "Symbols"}:
+        if initial_category not in {"Recent", "BigSmiles", "Nature/Food", "Symbols", "Custom"}:
             initial_category = "BigSmiles"
 
         self.bridge = SignalBridge()
         self.bridge.hotkey_pressed.connect(self.on_hotkey)
 
+        self.category_overrides = load_category_overrides()
         self.window = EptalEmojiWindow(self.entries, self.history, self.custom_chars, initial_category)
+        self.window.category_overrides = self.category_overrides
         self.window.emoji_selected.connect(self.on_emoji_selected)
+        self.window.on_delete_emoji = self.delete_emoji
+        self.window.on_move_emoji = self.move_emoji
 
         self.tray = QSystemTrayIcon()
         self.tray.setIcon(self._load_tray_icon())
@@ -1138,6 +1376,74 @@ class AppController(QObject):
         ok = self._set_autostart(checked)
         if not ok:
             self.autostart_action.setChecked(self._is_autostart_enabled())
+
+
+    def _reload_entries(self):
+        # Пересобирает записи с учётом своих, скрытых и переопределений категорий
+        base = build_emoji_entries()
+        merge_custom_entries(base, self.custom_chars)
+        st = load_state()
+        hidden = set(st.get("hidden_emojis", []))
+        if hidden:
+            base = [e for e in base if e.get("char") not in hidden]
+        self.entries = base
+        self.window.all_entries = base
+        self.window.custom_chars = self.custom_chars
+        self.window.history = self.history
+        self.window.category_overrides = self.category_overrides
+        self.window.refresh_grid()
+
+    def delete_emoji(self, ch):
+        # Удаляет смайлик: из своих или скрывает встроенный
+        if not ch:
+            return
+        try:
+            if ch in self.custom_chars:
+                self.custom_chars[:] = [x for x in self.custom_chars if x != ch]
+                save_custom(self.custom_chars)
+            else:
+                st = load_state()
+                hidden = st.get("hidden_emojis", [])
+                if not isinstance(hidden, list):
+                    hidden = []
+                if ch not in hidden:
+                    hidden.append(ch)
+                st["hidden_emojis"] = hidden
+                save_state(st)
+
+            if ch in self.category_overrides:
+                self.category_overrides.pop(ch, None)
+                save_category_overrides(self.category_overrides)
+
+            self.history = [x for x in self.history if x != ch]
+            save_history(self.history)
+            self._reload_entries()
+        except Exception:
+            pass
+
+    def move_emoji(self, ch, target_category):
+        # Переносит смайлик в указанную категорию
+        if not ch or not target_category or target_category == "Recent":
+            return
+        if target_category not in {"BigSmiles", "Nature/Food", "Symbols", "Custom"}:
+            return
+        try:
+            if target_category == "Custom":
+                if ch not in self.custom_chars:
+                    self.custom_chars.append(ch)
+                    save_custom(self.custom_chars)
+                if ch in self.category_overrides:
+                    self.category_overrides.pop(ch, None)
+                    save_category_overrides(self.category_overrides)
+            else:
+                if ch in self.custom_chars:
+                    self.custom_chars[:] = [x for x in self.custom_chars if x != ch]
+                    save_custom(self.custom_chars)
+                self.category_overrides[ch] = target_category
+                save_category_overrides(self.category_overrides)
+            self._reload_entries()
+        except Exception:
+            pass
 
     def clear_recent(self):
         # Очистка истории недавних эмодзи
