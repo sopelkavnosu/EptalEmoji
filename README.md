@@ -47,7 +47,7 @@ pythonw eptal_emoji.py
 
 ```bash
 pip install pyinstaller
-pyinstaller --noconfirm --clean --onefile --windowed --name EptalEmoji eptal_emoji.py
+pyinstaller --noconfirm --clean --onefile --windowed --icon=eptal_emoji.ico --name EptalEmoji eptal_emoji.py
 ```
 
 Готовый файл появится в `dist/EptalEmoji.exe`. Для запуска можно использовать `Start.bat`.
