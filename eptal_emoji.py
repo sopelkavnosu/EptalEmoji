@@ -43,7 +43,7 @@ SWP_FRAMECHANGED = 0x0020
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
 
-APP_VERSION = "1.32"
+APP_VERSION = "1.33"
 HISTORY_PATH = Path.home() / ".eptal_emoji_history.json"
 STATE_PATH = Path.home() / ".eptal_emoji_state.json"
 CUSTOM_PATH = Path.home() / ".eptal_emoji_custom.json"
@@ -559,7 +559,7 @@ class EptalEmojiWindow(QWidget):
         self.container.setStyleSheet(
             """
             QFrame#container {
-                background-color: rgba(32, 32, 32, 70);
+                background-color: rgba(22, 22, 22, 165);
                 border: 1px solid #3a3a3a;
                 border-radius: 12px;
             }
@@ -593,7 +593,7 @@ class EptalEmojiWindow(QWidget):
                 background: transparent;
             }
             QWidget#gridHost {
-                background-color: rgba(32, 32, 32, 10);
+                background-color: rgba(18, 18, 18, 35);
                 border-radius: 8px;
             }
             """
