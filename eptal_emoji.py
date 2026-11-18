@@ -39,7 +39,7 @@ SWP_FRAMECHANGED = 0x0020
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
 
-APP_VERSION = "1.29"
+APP_VERSION = "1.30"
 HISTORY_PATH = Path.home() / ".eptal_emoji_history.json"
 STATE_PATH = Path.home() / ".eptal_emoji_state.json"
 MAX_HISTORY = 30
@@ -277,6 +277,10 @@ class EptalEmojiWindow(QWidget):
         self._save_size_timer.setSingleShot(True)
         self._save_size_timer.setInterval(400)
         self._save_size_timer.timeout.connect(self._save_window_size)
+        self._save_pos_timer = QTimer(self)
+        self._save_pos_timer.setSingleShot(True)
+        self._save_pos_timer.setInterval(400)
+        self._save_pos_timer.timeout.connect(self._save_window_pos)
         self._reflow_timer = QTimer(self)
         self._reflow_timer.setSingleShot(True)
         self._reflow_timer.setInterval(120)
@@ -473,6 +477,16 @@ class EptalEmojiWindow(QWidget):
         except Exception:
             pass
 
+    def _save_window_pos(self):
+        # Сохраняет позицию окна после перемещения
+        try:
+            st = load_state()
+            st["window_x"] = self.x()
+            st["window_y"] = self.y()
+            save_state(st)
+        except Exception:
+            pass
+
     def set_category(self, name):
         self.current_category = name
         for n, btn in self.cat_buttons.items():
@@ -631,11 +645,25 @@ class EptalEmojiWindow(QWidget):
         current_screen = QApplication.screenAt(self.frameGeometry().center()) if was_visible else None
         need_reposition = (not was_visible) or (screen is not None and current_screen is not None and screen != current_screen) or (screen is not None and current_screen is None)
         if need_reposition:
-            geo = screen.availableGeometry() if screen else None
-            if geo:
-                x = geo.x() + geo.width() - self.width() - 12
-                y = geo.y() + geo.height() - self.height() - 12
-                self.move(x, y)
+            moved = False
+            try:
+                st = load_state()
+                sx = st.get("window_x")
+                sy = st.get("window_y")
+                if sx is not None and sy is not None and screen is not None:
+                    sp = QPoint(int(sx), int(sy))
+                    ss = QApplication.screenAt(sp)
+                    if ss is screen:
+                        self.move(sp)
+                        moved = True
+            except Exception:
+                moved = False
+            if not moved:
+                geo = screen.availableGeometry() if screen else None
+                if geo:
+                    x = geo.x() + geo.width() - self.width() - 12
+                    y = geo.y() + geo.height() - self.height() - 12
+                    self.move(x, y)
 
         # Показ без перехвата фокуса
         self.setWindowFlag(Qt.WindowType.WindowDoesNotAcceptFocus, True)
@@ -717,7 +745,10 @@ class EptalEmojiWindow(QWidget):
                 return super().eventFilter(obj, event)
 
             if et == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
+                was_dragging = self._drag_state is not None and self._drag_state.get("dragging")
                 self._drag_state = None
+                if was_dragging and hasattr(self, "_save_pos_timer"):
+                    self._save_pos_timer.start()
                 return super().eventFilter(obj, event)
         except Exception:
             pass
@@ -728,11 +759,11 @@ class AppController(QObject):
     def __init__(self, app: QApplication):
         super().__init__()
         self.app = app
-        self.auto_popup_enabled = True
         self.last_target_hwnd = 0
         self.entries = build_emoji_entries()
         self.history = load_history()
         state = load_state()
+        self.auto_popup_enabled = bool(state.get("auto_popup_enabled", True))
         initial_category = state.get("last_category") or "BigSmiles"
         if initial_category in {"All", "Faces", "Flags"}:
             initial_category = "BigSmiles"
@@ -755,6 +786,7 @@ class AppController(QObject):
         self.watcher = FocusWatcher(self.bridge)
         self.watcher.focus_text_input.connect(self.on_text_focus)
         self.watcher.start()
+        self.watcher.set_enabled(self.auto_popup_enabled)
 
         self._register_hotkey()
         self._start_target_tracker()
@@ -783,7 +815,7 @@ class AppController(QObject):
 
         self.toggle_auto_action = QAction("Авто-показ при фокусе на поле ввода", menu)
         self.toggle_auto_action.setCheckable(True)
-        self.toggle_auto_action.setChecked(True)
+        self.toggle_auto_action.setChecked(self.auto_popup_enabled)
         self.toggle_auto_action.toggled.connect(self.on_toggle_auto)
         menu.addAction(self.toggle_auto_action)
 
@@ -806,6 +838,12 @@ class AppController(QObject):
     def on_toggle_auto(self, checked):
         self.auto_popup_enabled = checked
         self.watcher.set_enabled(checked)
+        try:
+            st = load_state()
+            st["auto_popup_enabled"] = bool(checked)
+            save_state(st)
+        except Exception:
+            pass
 
     def _autostart_key(self):
         return r"Software\Microsoft\Windows\CurrentVersion\Run"
