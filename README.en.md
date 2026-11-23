@@ -33,8 +33,8 @@ Semi-transparent window; you can resize it to your preference.
 
 ![Eptal emoji - search and categories](images/screenshot-2.png)
 
-
 ![Eptal emoji - emoji picker](images/screenshot-3.png)
+
 App settings are available by right-clicking the Eptal emoji icon in the system tray.
 
 ![Tray menu settings](images/settings.png)
