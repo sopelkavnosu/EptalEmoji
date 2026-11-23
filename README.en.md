@@ -84,4 +84,4 @@ The output file will appear in `dist/EptalEmoji.exe`. You can use `Start.bat` to
 
 ## License
 
-This project is distributed under the MIT License. See [LICENSE](LICENSE).
+This project is distributed under the GPL-3.0 License. See [LICENSE](LICENSE).

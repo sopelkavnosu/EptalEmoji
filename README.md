@@ -84,4 +84,4 @@ pyinstaller --noconfirm --clean --onefile --windowed --icon=eptal_emoji.ico --na
 
 ## Лицензия
 
-Проект распространяется по лицензии MIT. См. файл [LICENSE](LICENSE).
+Проект распространяется по лицензии GPL-3.0. См. файл [LICENSE](LICENSE).
