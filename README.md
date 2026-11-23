@@ -29,10 +29,12 @@
 
 Полупрозрачное окно; размер можно изменять по своему вкусу.
 
-![Eptal emoji — полупрозрачное окно](images/screenshot.png)
+![Eptal emoji - главное окно](images/screenshot-1.png)
 
-![Eptal emoji — настраиваемый размер окна](images/screenshot-2.png)
+![Eptal emoji - поиск и категории](images/screenshot-2.png)
 
+
+![Eptal emoji - выбор эмодзи](images/screenshot-3.png)
 Настройки приложения доступны по правому клику на значок Eptal emoji в области уведомлений (трее).
 
 ![Настройки в меню трея](images/settings.png)
