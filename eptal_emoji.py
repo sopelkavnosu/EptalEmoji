@@ -43,7 +43,7 @@ SWP_FRAMECHANGED = 0x0020
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
 
-APP_VERSION = "1.33"
+APP_VERSION = "1.39"
 HISTORY_PATH = Path.home() / ".eptal_emoji_history.json"
 STATE_PATH = Path.home() / ".eptal_emoji_state.json"
 CUSTOM_PATH = Path.home() / ".eptal_emoji_custom.json"
@@ -524,6 +524,8 @@ class EptalEmojiWindow(QWidget):
         self.on_move_emoji = None
         self.category_overrides = {}
         self.add_dialog = None
+        self._suppress_search_collapse = False
+        self._search_toggling = False
         self._save_size_timer = QTimer(self)
         self._save_size_timer.setSingleShot(True)
         self._save_size_timer.setInterval(400)
@@ -638,12 +640,30 @@ class EptalEmojiWindow(QWidget):
         self.added_btn.setAcceptDrops(True)
         self.cat_buttons["Custom"] = self.added_btn
         top_row.addWidget(self.added_btn)
+        self.search_btn = QPushButton("🔍")
+        self.search_btn.setFixedSize(28, 28)
+        self.search_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.search_btn.setToolTip("Поиск")
+        self.search_btn.setCheckable(True)
+        self.search_btn.setStyleSheet(
+            "QPushButton { background: #2b2b2b; color: #f3f3f3; border: none; border-radius: 8px; font-family: 'Segoe UI Emoji'; font-size: 14px; padding: 0px; }"
+            "QPushButton:hover { background: #3a3a3a; }"
+            "QPushButton:checked { background: #3a3a3a; }"
+        )
+        self.search_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.search_btn.installEventFilter(self)
+        self.search_btn.clicked.connect(self.toggle_search)
+        top_row.addWidget(self.search_btn)
+
+        # Встроенный поисковик: скрыт по умолчанию, фокус включается только при открытии
         self.search = QLineEdit()
         self.search.setPlaceholderText("Поиск...")
         self.search.textChanged.connect(self.refresh_grid)
         self.search.setMinimumWidth(0)
         self.search.setFixedHeight(24)
         self.search.setMaximumWidth(140)
+        self.search.setVisible(False)
+        self.search.setEnabled(False)
         top_row.addWidget(self.search, 1)
         self.add_btn = QPushButton("+")
         self.add_btn.setFixedSize(28, 28)
@@ -740,9 +760,99 @@ class EptalEmojiWindow(QWidget):
         except Exception:
             pass
 
+    def toggle_search(self, checked=None):
+        # Разворачивает/сворачивает встроенный поисковик
+        if getattr(self, "_search_toggling", False):
+            return
+        self._search_toggling = True
+        try:
+            expand = not self.search.isVisible()
+            try:
+                with open(r"C:\Users\Sadiu\AppData\Local\Temp\opencode\eptal_debug2.log","a",encoding="utf-8") as f:
+                    f.write(f"toggle expand={expand} checked={checked} visible={self.search.isVisible()}\n")
+            except Exception:
+                pass
+            self.search_btn.setChecked(expand)
+            if expand:
+                self._suppress_search_collapse = True
+                try:
+                    self.search.setEnabled(True)
+                    self.search.setVisible(True)
+                    self._set_search_focus_mode(True)
+                    self.search.setFocus()
+                    self.search.selectAll()
+                finally:
+                    self._suppress_search_collapse = False
+            else:
+                self.search.clear()
+                self.search.setVisible(False)
+                self.search.setEnabled(False)
+                self._set_search_focus_mode(False)
+        except Exception:
+            pass
+        finally:
+            self._search_toggling = False
+
+    def _set_search_focus_mode(self, enabled, reshow=True):
+        # Включает/выключает возможность фокуса для ввода в поиск
+        try:
+            self._suppress_search_collapse = True
+            self.setWindowFlag(Qt.WindowType.WindowDoesNotAcceptFocus, not enabled)
+            self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, not enabled)
+            self.setFocusPolicy(Qt.FocusPolicy.StrongFocus if enabled else Qt.FocusPolicy.NoFocus)
+            if self.isVisible():
+                self.show()  # применить флаги окна
+            hwnd = int(self.winId())
+            style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            if enabled:
+                user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style & ~WS_EX_NOACTIVATE)
+                user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED)
+                self.activateWindow()
+                try:
+                    user32.SetForegroundWindow(hwnd)
+                except Exception:
+                    pass
+                try:
+                    self.search.setFocus()
+                except Exception:
+                    pass
+            else:
+                user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW)
+                user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED | SWP_NOACTIVATE)
+        except Exception:
+            pass
+        finally:
+            self._suppress_search_collapse = False
+
     def showEvent(self, event):
         super().showEvent(event)
-        self._update_no_activate_exstyle()
+        # Поиск не сворачиваем автоматически: только по кнопке лупы
+        if getattr(self, "_suppress_search_collapse", False):
+            return
+        try:
+            if hasattr(self, "search") and self.search.isVisible() and self.search.isEnabled():
+                self._set_search_focus_mode(True)
+            else:
+                self._update_no_activate_exstyle()
+        except Exception:
+            self._update_no_activate_exstyle()
+
+    def hideEvent(self, event):
+        try:
+            with open(r"C:\Users\Sadiu\AppData\Local\Temp\opencode\eptal_debug2.log","a",encoding="utf-8") as f:
+                f.write(f"hideEvent suppress={getattr(self,'_suppress_search_collapse',False)} search_vis={getattr(self,'search',None) and self.search.isVisible()}\n")
+        except Exception:
+            pass
+        try:
+            # Поиск не сворачиваем автоматически: только по кнопке лупы
+            if not getattr(self, "_suppress_search_collapse", False):
+                self._set_search_focus_mode(False, reshow=False)
+        except Exception:
+            pass
+        super().hideEvent(event)
+        # При внутреннем пересоздании окна (смена флагов) не оставляем его скрытым
+        if getattr(self, "_suppress_search_collapse", False):
+            QTimer.singleShot(0, lambda: (not self.isVisible()) and self.show())
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -1038,11 +1148,12 @@ class EptalEmojiWindow(QWidget):
 
         was_visible = self.isVisible()
 
-        # Выбор монитора: по целевому окну/курсору, чтобы окно появлялось на активном экране
+        # Выбор монитора: по курсору/целевому окну, чтобы окно появлялось на активном экране
         screen = None
         try:
-            point = QCursor.pos()
-            if self.target_hwnd:
+            cursor_pos = QCursor.pos()
+            screen = QApplication.screenAt(cursor_pos)
+            if screen is None and self.target_hwnd:
                 class RECT(ctypes.Structure):
                     _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long), ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
 
@@ -1050,8 +1161,7 @@ class EptalEmojiWindow(QWidget):
                 if user32.GetWindowRect(int(self.target_hwnd), ctypes.byref(r)):
                     cx = (r.left + r.right) // 2
                     cy = (r.top + r.bottom) // 2
-                    point = QPoint(cx, cy)
-            screen = QApplication.screenAt(point)
+                    screen = QApplication.screenAt(QPoint(cx, cy))
         except Exception:
             screen = None
         if screen is None:
@@ -1080,22 +1190,41 @@ class EptalEmojiWindow(QWidget):
                     y = geo.y() + geo.height() - self.height() - 12
                     self.move(x, y)
 
-        # Показ без перехвата фокуса
-        self.setWindowFlag(Qt.WindowType.WindowDoesNotAcceptFocus, True)
-        self.show()
-        self._update_no_activate_exstyle()
+        # Гарантируем, что окно видно на каком-либо экране
         try:
-            hwnd = int(self.winId())
-            SW_SHOWNOACTIVATE = 4
-            HWND_TOPMOST = -1
-            SWP_NOMOVE = 0x0002
-            SWP_NOSIZE = 0x0001
-            SWP_NOACTIVATE = 0x0010
-            SWP_SHOWWINDOW = 0x0040
-            user32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
-            user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW)
+            center = self.frameGeometry().center()
+            vis_screen = QApplication.screenAt(center)
+            if vis_screen is None:
+                geo = (screen or QApplication.primaryScreen() or QApplication.screens()[0]).availableGeometry()
+                x = min(max(self.x(), geo.x()), geo.x() + max(0, geo.width() - self.width()))
+                y = min(max(self.y(), geo.y()), geo.y() + max(0, geo.height() - self.height()))
+                self.move(x, y)
         except Exception:
             pass
+
+        # Показываем окно; если активен поиск, не ломаем режим ввода
+        search_active = hasattr(self, "search") and self.search.isVisible() and self.search.isEnabled()
+        if search_active:
+            self.setWindowFlag(Qt.WindowType.WindowDoesNotAcceptFocus, False)
+            self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            self.show()
+            self._set_search_focus_mode(True)
+        else:
+            self.setWindowFlag(Qt.WindowType.WindowDoesNotAcceptFocus, True)
+            self.show()
+            self._update_no_activate_exstyle()
+            try:
+                hwnd = int(self.winId())
+                SW_SHOWNOACTIVATE = 4
+                HWND_TOPMOST = -1
+                SWP_NOMOVE = 0x0002
+                SWP_NOSIZE = 0x0001
+                SWP_NOACTIVATE = 0x0010
+                SWP_SHOWWINDOW = 0x0040
+                user32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
+                user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW)
+            except Exception:
+                pass
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape:
@@ -1555,6 +1684,12 @@ class AppController(QObject):
                 wpos = self.window.mapFromGlobal(gpos)
                 inside_picker = self.window.rect().contains(wpos)
                 if not inside_picker:
+                    # Не скрываем окно во время активного поиска
+                    try:
+                        if hasattr(self.window, "search") and self.window.search.isVisible():
+                            return super().eventFilter(obj, event)
+                    except Exception:
+                        pass
                     # if click went to target text field, keep open? spec says hide when clicking outside both picker and active text field
                     # best-effort: if click is inside target window area, we can't easily know "text field" bounds globally; hide on outside picker clicks except keep behavior simple
                     target = self.last_target_hwnd
@@ -1567,6 +1702,11 @@ class AppController(QObject):
                             if r.left <= gpos.x() <= r.right and r.top <= gpos.y() <= r.bottom:
                                 # inside target window (possibly text field) -> do not hide
                                 return super().eventFilter(obj, event)
+                    try:
+                        with open(r"C:\Users\Sadiu\AppData\Local\Temp\opencode\eptal_debug2.log","a",encoding="utf-8") as f:
+                            f.write("appFilter hide\n")
+                    except Exception:
+                        pass
                     self.window.hide()
         except Exception:
             pass
