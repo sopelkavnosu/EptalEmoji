@@ -71,10 +71,10 @@ The output file will appear in `dist/EptalEmoji.exe`. You can use `Start.bat` to
 
 - `Ctrl+Alt+E` — show the emoji picker window.
 - Click an emoji — insert it into the active field (when possible).
-- `+` button — add your own emojis.
+- `+` button — open the add-emoji window: paste one or more emojis into the field and click "Add".
 - Drag an emoji onto a tab — move it between categories.
 - Right-click an emoji — delete/hide it.
-- Double-click the tray icon — show/hide the window.
+- Double-click the Eptal Emoji tray icon (in the taskbar notification area) — show/hide the window.
 
 ## Notes
 
