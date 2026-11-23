@@ -1086,8 +1086,8 @@ class EptalEmojiWindow(QWidget):
     def _reflow_grid_if_needed(self):
         # Перестроить сетку при изменении числа столбцов
         try:
-            is_big = self.current_category == "BigSmiles"
-            btn_size = 56 if is_big else 42
+            is_big = True
+            btn_size = 56
             cols = self._calc_cols(btn_size)
             if cols != self._last_grid_cols:
                 self.refresh_grid()
@@ -1101,10 +1101,10 @@ class EptalEmojiWindow(QWidget):
         self.clear_grid()
         self.scroll.verticalScrollBar().setValue(0)
         entries = self._filtered_entries()
-        is_big = self.current_category == "BigSmiles"
+        is_big = True
         emoji_font = QFont("Segoe UI Emoji")
-        emoji_font.setPixelSize(34 if is_big else 22)
-        btn_size = 56 if is_big else 42
+        emoji_font.setPixelSize(34)
+        btn_size = 56
         cols = self._calc_cols(btn_size)
         self._last_grid_cols = cols
         batch = 80
@@ -1123,7 +1123,7 @@ class EptalEmojiWindow(QWidget):
                 btn.setCursor(Qt.CursorShape.PointingHandCursor)
                 btn.setFixedSize(btn_size, btn_size)
                 btn.setFont(emoji_font)
-                font_size = 34 if is_big else 22
+                font_size = 34
                 btn.setStyleSheet(
                     f"QPushButton {{ background: transparent; border: none; color: #ffffff; font-family: 'Segoe UI Emoji'; font-size: {font_size}px; }}"
                     "QPushButton:hover { background: #333333; border-radius: 8px; }"
