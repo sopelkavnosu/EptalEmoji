@@ -549,6 +549,7 @@ class EptalEmojiWindow(QWidget):
         state = load_state()
         w = int(state.get("window_width", 476) or 476)
         h = int(state.get("window_height", 480) or 480)
+        self.emoji_btn_size = max(32, min(72, int(state.get("emoji_btn_size", 56) or 56)))
         self.resize(max(360, w), max(320, h))
         self.setMinimumSize(360, 320)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
@@ -734,6 +735,32 @@ class EptalEmojiWindow(QWidget):
         self.app_label = QLabel(f"Eptal emoji v{APP_VERSION}")
         self.app_label.setStyleSheet("color: #bdbdbd; font-family: 'Segoe UI'; font-size: 11px;")
         grip_row.addWidget(self.app_label, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom)
+
+        # Маленькие кнопки изменения размера смайликов
+        self.size_down_btn = QPushButton("-")
+        self.size_down_btn.setFixedSize(18, 18)
+        self.size_down_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.size_down_btn.setToolTip("Уменьшить смайлики")
+        self.size_down_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.size_down_btn.setStyleSheet(
+            "QPushButton { background: #2b2b2b; color: #d0d0d0; border: none; border-radius: 4px; font-size: 11px; padding: 0px; }"
+            "QPushButton:hover { background: #3a3a3a; }"
+        )
+        self.size_down_btn.clicked.connect(lambda: self.change_emoji_size(-4))
+        grip_row.addWidget(self.size_down_btn, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom)
+
+        self.size_up_btn = QPushButton("+")
+        self.size_up_btn.setFixedSize(18, 18)
+        self.size_up_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.size_up_btn.setToolTip("Увеличить смайлики")
+        self.size_up_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.size_up_btn.setStyleSheet(
+            "QPushButton { background: #2b2b2b; color: #d0d0d0; border: none; border-radius: 4px; font-size: 11px; padding: 0px; }"
+            "QPushButton:hover { background: #3a3a3a; }"
+        )
+        self.size_up_btn.clicked.connect(lambda: self.change_emoji_size(4))
+        grip_row.addWidget(self.size_up_btn, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom)
+
         grip_row.addStretch(1)
         self.size_grip = QSizeGrip(self.container)
         self.size_grip.setFixedSize(14, 14)
@@ -1086,11 +1113,25 @@ class EptalEmojiWindow(QWidget):
     def _reflow_grid_if_needed(self):
         # Перестроить сетку при изменении числа столбцов
         try:
-            is_big = True
-            btn_size = 56
+            btn_size = max(32, min(72, int(getattr(self, "emoji_btn_size", 56) or 56)))
             cols = self._calc_cols(btn_size)
             if cols != self._last_grid_cols:
                 self.refresh_grid()
+        except Exception:
+            pass
+
+    def change_emoji_size(self, delta):
+        # Изменяет размер смайликов и сохраняет настройку
+        try:
+            cur = int(getattr(self, "emoji_btn_size", 56) or 56)
+            new_size = max(32, min(72, cur + int(delta)))
+            if new_size == cur:
+                return
+            self.emoji_btn_size = new_size
+            st = load_state()
+            st["emoji_btn_size"] = new_size
+            save_state(st)
+            self.refresh_grid()
         except Exception:
             pass
 
@@ -1101,10 +1142,10 @@ class EptalEmojiWindow(QWidget):
         self.clear_grid()
         self.scroll.verticalScrollBar().setValue(0)
         entries = self._filtered_entries()
-        is_big = True
+        btn_size = max(32, min(72, int(getattr(self, "emoji_btn_size", 56) or 56)))
+        font_size = max(18, int(btn_size * 0.6))
         emoji_font = QFont("Segoe UI Emoji")
-        emoji_font.setPixelSize(34)
-        btn_size = 56
+        emoji_font.setPixelSize(font_size)
         cols = self._calc_cols(btn_size)
         self._last_grid_cols = cols
         batch = 80
@@ -1123,7 +1164,6 @@ class EptalEmojiWindow(QWidget):
                 btn.setCursor(Qt.CursorShape.PointingHandCursor)
                 btn.setFixedSize(btn_size, btn_size)
                 btn.setFont(emoji_font)
-                font_size = 34
                 btn.setStyleSheet(
                     f"QPushButton {{ background: transparent; border: none; color: #ffffff; font-family: 'Segoe UI Emoji'; font-size: {font_size}px; }}"
                     "QPushButton:hover { background: #333333; border-radius: 8px; }"
